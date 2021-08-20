@@ -4,7 +4,7 @@ CHUGIN_NAME=ConvRev
 
 # all of the c/cpp files that compose this chugin
 C_MODULES=
-CXX_MODULES=ConvRev.cpp
+CXX_MODULES=ConvRev.cpp Utilities.cpp AudioFFT.cpp FFTConvolver.cpp TwoStageFFTConvolver.cpp
 
 # where the chuck headers are
 CK_SRC_PATH?=../chuck/include/
@@ -15,7 +15,7 @@ CK_SRC_PATH?=../chuck/include/
 # ---------------------------------------------------------------------------- #
 
 # default target: print usage message and quit
-current: 
+current:
 	@echo "[chuck build]: please use one of the following configurations:"
 	@echo "   make linux, make osx, or make win32"
 
@@ -68,6 +68,8 @@ ifneq ($(CHUCK_STRICT),)
 FLAGS+= -Werror
 endif
 
+FLAGS+=-std=c++11
+
 
 
 # default: build a dynamic chugin
@@ -87,9 +89,11 @@ CHUG=$(addsuffix $(SUFFIX),$(CHUGIN_NAME))
 
 all: $(CHUG)
 
+# LDFLAGS = -framework Accelerate
+
 $(CHUG): $(C_OBJECTS) $(CXX_OBJECTS)
 ifeq ($(CK_CHUGIN_STATIC),0)
-	$(LD) $(LDFLAGS) -o $@ $^
+	$(LD) $(LDFLAGS) -o $@ $^ -framework Accelerate
 else
 	ar rv $@ $^
 	ranlib $@
@@ -106,6 +110,5 @@ install: $(CHUG)
 	cp $^ $(CHUGIN_PATH)
 	chmod 755 $(CHUGIN_PATH)/$(CHUG)
 
-clean: 
+clean:
 	rm -rf $(C_OBJECTS) $(CXX_OBJECTS) $(CHUG) Release Debug
-

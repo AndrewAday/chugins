@@ -20,12 +20,41 @@ CK_DLL_DTOR(convrev_dtor);
 CK_DLL_MFUN(convrev_setParam);
 CK_DLL_MFUN(convrev_getParam);
 
+CK_DLL_MFUN(convrev_setOrder);
+CK_DLL_MFUN(convrev_getOrder);
+
 // for Chugins extending UGen, this is mono synthesis function for 1 sample
 CK_DLL_TICK(convrev_tick);
 
 // this is a special offset reserved for Chugin internal data
 t_CKINT convrev_data_offset = 0;
 
+
+/*
+TODO
+- store IR buffer as member variable
+- buffer incoming samples in circular buffer
+  - cpp circular buffer implementation?
+  - https://en.wikipedia.org/wiki/Circular_buffer
+- link with cpp library that can do block convolutions in freq domain
+
+
+- LINK AudioFFT files, make sure it actually compiles
+
+- can I do multithreading in chugin?
+
+#if defined(FFTCONVOLVER_USE_SSE)
+    _mm_malloc(ptr) and _mm_free(ptr) for memory-aligned buffers
+#else
+
+
+Baby steps
+1. get fft convolution working at all. Buffer whole input, convolve, and output.
+  - this is the naive block conv described in paper
+2. implement equivalent of FFTConvolveMono.ck with FFTConvolver, uniform partitions
+3. search for existing implementations of Gardner's paper
+
+*/
 
 // class definition for internal Chugin data
 // (note: this isn't strictly necessary, but serves as example
@@ -37,6 +66,13 @@ public:
     ConvRev( t_CKFLOAT fs)
     {
         m_param = 0;
+        _order = 0;
+        _ir_buffer = new float[0];
+    }
+
+    ~ConvRev()
+    {
+      delete[] _ir_buffer;
     }
 
     // for Chugins extending UGen
@@ -55,10 +91,30 @@ public:
 
     // get parameter example
     t_CKFLOAT getParam() { return m_param; }
-    
+
+    t_CKINT setOrder( t_CKINT m )
+    {
+
+        delete[] _ir_buffer;
+
+        _ir_buffer = new float[m];
+
+        for (int i = 0; i < m; i++)  {
+            _ir_buffer[i] = 0.0;
+        }
+
+        return m;
+    }
+
+    t_CKINT getOrder() { return _order; }
+
 private:
     // instance data
     t_CKFLOAT m_param;
+
+    t_CKINT _order;
+    float *_ir_buffer;
+
 };
 
 
@@ -69,7 +125,7 @@ CK_DLL_QUERY( ConvRev )
 {
     // hmm, don't change this...
     QUERY->setname(QUERY, "ConvRev");
-    
+
     // begin the class definition
     // can change the second argument to extend a different ChucK class
     QUERY->begin_class(QUERY, "ConvRev", "UGen");
@@ -78,11 +134,11 @@ CK_DLL_QUERY( ConvRev )
     QUERY->add_ctor(QUERY, convrev_ctor);
     // register the destructor (probably no need to change)
     QUERY->add_dtor(QUERY, convrev_dtor);
-    
+
     // for UGen's only: add tick function
     QUERY->add_ugen_func(QUERY, convrev_tick, NULL, 1, 1);
-    
-    // NOTE: if this is to be a UGen with more than 1 channel, 
+
+    // NOTE: if this is to be a UGen with more than 1 channel,
     // e.g., a multichannel UGen -- will need to use add_ugen_funcf()
     // and declare a tickf function using CK_DLL_TICKF
 
@@ -93,8 +149,14 @@ CK_DLL_QUERY( ConvRev )
 
     // example of adding getter method
     QUERY->add_mfun(QUERY, convrev_getParam, "float", "param");
-    
-    // this reserves a variable in the ChucK internal class to store 
+
+
+    QUERY->add_mfun(QUERY, convrev_setOrder, "int", "order");
+    QUERY->add_arg(QUERY, "int", "arg");
+
+    QUERY->add_mfun(QUERY, convrev_getOrder, "int", "order");
+
+    // this reserves a variable in the ChucK internal class to store
     // referene to the c++ class we defined above
     convrev_data_offset = QUERY->add_mvar(QUERY, "int", "@cr_data", false);
 
@@ -112,10 +174,10 @@ CK_DLL_CTOR(convrev_ctor)
 {
     // get the offset where we'll store our internal c++ class pointer
     OBJ_MEMBER_INT(SELF, convrev_data_offset) = 0;
-    
+
     // instantiate our internal c++ class representation
     ConvRev * cr_obj = new ConvRev(API->vm->get_srate(API, SHRED));
-    
+
     // store the pointer in the ChucK object member
     OBJ_MEMBER_INT(SELF, convrev_data_offset) = (t_CKINT) cr_obj;
 }
@@ -142,7 +204,7 @@ CK_DLL_TICK(convrev_tick)
 {
     // get our c++ class pointer
     ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
- 
+
     // invoke our tick function; store in the magical out variable
     if(cr_obj) *out = cr_obj->tick(in);
 
@@ -168,4 +230,16 @@ CK_DLL_MFUN(convrev_getParam)
     ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
     // set the return value
     RETURN->v_float = cr_obj->getParam();
+}
+
+CK_DLL_MFUN(convrev_setOrder)
+{
+    ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
+    RETURN->v_int = cr_obj->setOrder(GET_NEXT_INT(ARGS));
+}
+
+CK_DLL_MFUN(convrev_getOrder)
+{
+    ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
+    RETURN->v_int = cr_obj->getOrder();
 }
