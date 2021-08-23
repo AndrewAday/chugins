@@ -7,6 +7,10 @@
 #include "chuck_dl.h"
 #include "chuck_def.h"
 
+#include "FFTConvolver.h"
+#include "TwoStageFFTConvolver.h"
+#include "Utilities.h"
+
 // general includes
 #include <stdio.h>
 #include <limits.h>
@@ -68,11 +72,13 @@ public:
         m_param = 0;
         _order = 0;
         _ir_buffer = new float[0];
+        _convolver = new fftconvolver::FFTConvolver();
     }
 
     ~ConvRev()
     {
-      delete[] _ir_buffer;
+        delete[] _ir_buffer;
+        delete _convolver;
     }
 
     // for Chugins extending UGen
@@ -114,6 +120,7 @@ private:
 
     t_CKINT _order;
     float *_ir_buffer;
+    fftconvolver::FFTConvolver *_convolver;
 
 };
 
