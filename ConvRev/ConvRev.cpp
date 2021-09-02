@@ -13,6 +13,7 @@
 
 // general includes
 #include <stdio.h>
+#include <thread>
 #include <limits.h>
 
 // declaration of chugin constructor
@@ -21,11 +22,19 @@ CK_DLL_CTOR(convrev_ctor);
 CK_DLL_DTOR(convrev_dtor);
 
 // example of getter/setter
-CK_DLL_MFUN(convrev_setParam);
-CK_DLL_MFUN(convrev_getParam);
+CK_DLL_MFUN(convrev_setBlockSize);
+CK_DLL_MFUN(convrev_getBlockSize);
 
+// Set order of IR buffer
 CK_DLL_MFUN(convrev_setOrder);
 CK_DLL_MFUN(convrev_getOrder);
+
+// populate individual IR sample values
+CK_DLL_MFUN(convrev_setCoeff);
+CK_DLL_MFUN(convrev_getCoeff);
+
+// load entire buffer at once  (see fluidsynth for how to take in array arg)
+// CK_DLL_MFUN(convrev_setIRBuffer);
 
 // for Chugins extending UGen, this is mono synthesis function for 1 sample
 CK_DLL_TICK(convrev_tick);
@@ -40,10 +49,6 @@ TODO
 - buffer incoming samples in circular buffer
   - cpp circular buffer implementation?
   - https://en.wikipedia.org/wiki/Circular_buffer
-- link with cpp library that can do block convolutions in freq domain
-
-
-- LINK AudioFFT files, make sure it actually compiles
 
 - can I do multithreading in chugin?
 
@@ -63,16 +68,20 @@ Baby steps
 // class definition for internal Chugin data
 // (note: this isn't strictly necessary, but serves as example
 // of one recommended approach)
+
+
 class ConvRev
 {
 public:
     // constructor
     ConvRev( t_CKFLOAT fs)
     {
-        m_param = 0;
+        _SR = fs;
+        _blocksize = 128;
         _order = 0;
         _ir_buffer = new float[0];
         _convolver = new fftconvolver::FFTConvolver();
+        _tmp = 0;
     }
 
     ~ConvRev()
@@ -85,18 +94,19 @@ public:
     SAMPLE tick( SAMPLE in )
     {
         // default: this passes whatever input is patched into Chugin
-        return in;
+        return _ir_buffer[_tmp++ % _order];
+        // return in;
     }
 
     // set parameter example
-    t_CKFLOAT setParam( t_CKFLOAT p )
+    t_CKFLOAT setBlockSize( t_CKFLOAT p )
     {
-        m_param = p;
+        _blocksize = p;
         return p;
     }
 
     // get parameter example
-    t_CKFLOAT getParam() { return m_param; }
+    t_CKFLOAT getBlockSize() { return _blocksize; }
 
     t_CKINT setOrder( t_CKINT m )
     {
@@ -109,16 +119,35 @@ public:
             _ir_buffer[i] = 0.0;
         }
 
-        return m;
+        _order = m;
+
+        return _order;
     }
 
-    t_CKINT getOrder() { return _order; }
+    t_CKINT getOrder() {
+      std::thread thr(&ConvRev::test_thread_print, this);
+      thr.join();
+      return _order;
+    }
+
+    t_CKFLOAT setCoeff(t_CKINT idx, t_CKFLOAT val) {
+      if (idx >= _order) {
+        printf("illegal idx out of bounds, idx = %li on size %li\n", idx, _order);
+        return val;
+      }
+      _ir_buffer[idx] = val;
+      return val;
+    }
+    t_CKFLOAT getCoeff(t_CKINT idx) { return _ir_buffer[idx]; }
+
+    void test_thread_print() { printf("thread print %li\n", _order); }
 
 private:
     // instance data
-    t_CKFLOAT m_param;
-
+    t_CKINT _blocksize;
+    t_CKFLOAT _SR;
     t_CKINT _order;
+    int _tmp;
     float *_ir_buffer;
     fftconvolver::FFTConvolver *_convolver;
 
@@ -150,18 +179,26 @@ CK_DLL_QUERY( ConvRev )
     // and declare a tickf function using CK_DLL_TICKF
 
     // example of adding setter method
-    QUERY->add_mfun(QUERY, convrev_setParam, "float", "param");
+    QUERY->add_mfun(QUERY, convrev_setBlockSize, "float", "param");
     // example of adding argument to the above method
     QUERY->add_arg(QUERY, "float", "arg");
 
     // example of adding getter method
-    QUERY->add_mfun(QUERY, convrev_getParam, "float", "param");
+    QUERY->add_mfun(QUERY, convrev_getBlockSize, "float", "param");
 
 
     QUERY->add_mfun(QUERY, convrev_setOrder, "int", "order");
     QUERY->add_arg(QUERY, "int", "arg");
 
     QUERY->add_mfun(QUERY, convrev_getOrder, "int", "order");
+
+
+    QUERY->add_mfun(QUERY, convrev_setCoeff, "float", "coeff");
+    QUERY->add_arg(QUERY, "int", "arg");
+    QUERY->add_arg(QUERY, "float", "arg2");
+
+    QUERY->add_mfun(QUERY, convrev_getCoeff, "float", "coeff");
+    QUERY->add_arg(QUERY, "int", "arg");
 
     // this reserves a variable in the ChucK internal class to store
     // referene to the c++ class we defined above
@@ -221,22 +258,22 @@ CK_DLL_TICK(convrev_tick)
 
 
 // example implementation for setter
-CK_DLL_MFUN(convrev_setParam)
+CK_DLL_MFUN(convrev_setBlockSize)
 {
     // get our c++ class pointer
     ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
     // set the return value
-    RETURN->v_float = cr_obj->setParam(GET_NEXT_FLOAT(ARGS));
+    RETURN->v_float = cr_obj->setBlockSize(GET_NEXT_FLOAT(ARGS));
 }
 
 
 // example implementation for getter
-CK_DLL_MFUN(convrev_getParam)
+CK_DLL_MFUN(convrev_getBlockSize)
 {
     // get our c++ class pointer
     ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
     // set the return value
-    RETURN->v_float = cr_obj->getParam();
+    RETURN->v_float = cr_obj->getBlockSize();
 }
 
 CK_DLL_MFUN(convrev_setOrder)
@@ -249,4 +286,19 @@ CK_DLL_MFUN(convrev_getOrder)
 {
     ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
     RETURN->v_int = cr_obj->getOrder();
+}
+
+
+CK_DLL_MFUN(convrev_setCoeff)
+{
+    ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
+    t_CKINT idx = GET_NEXT_INT(ARGS);
+    t_CKFLOAT val = GET_NEXT_FLOAT(ARGS);
+    RETURN->v_int = cr_obj->setCoeff(idx, val);
+}
+
+CK_DLL_MFUN(convrev_getCoeff)
+{
+    ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
+    RETURN->v_int = cr_obj->getCoeff(GET_CK_INT(ARGS));
 }
