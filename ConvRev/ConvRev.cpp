@@ -13,8 +13,12 @@
 
 // general includes
 #include <stdio.h>
-#include <thread>
 #include <limits.h>
+
+#include <mutex>
+#include <thread>
+
+#define DEF_BLOCKSIZE 128
 
 // declaration of chugin constructor
 CK_DLL_CTOR(convrev_ctor);
@@ -32,6 +36,8 @@ CK_DLL_MFUN(convrev_getOrder);
 // populate individual IR sample values
 CK_DLL_MFUN(convrev_setCoeff);
 CK_DLL_MFUN(convrev_getCoeff);
+
+CK_DLL_MFUN(convrev_init);  // initialize convolution engine
 
 // load entire buffer at once  (see fluidsynth for how to take in array arg)
 // CK_DLL_MFUN(convrev_setIRBuffer);
@@ -77,25 +83,73 @@ public:
     ConvRev( t_CKFLOAT fs)
     {
         _SR = fs;
-        _blocksize = 128;
+        _blocksize = DEF_BLOCKSIZE;
         _order = 0;
         _ir_buffer = new float[0];
-        _convolver = new fftconvolver::FFTConvolver();
         _tmp = 0;
+        _convolver = new fftconvolver::FFTConvolver();
+        _idx = 0;
+        _total = 0;
+        _joined = false;
+        _scale_factor = 1;
     }
 
     ~ConvRev()
     {
         delete[] _ir_buffer;
+        delete[] _input_buffer;
+        delete[] _output_buffer;
+        delete[] _staging_in_buffer;
+        delete[] _staging_out_buffer;
         delete _convolver;
+        _conv_thr.join();
     }
 
     // for Chugins extending UGen
     SAMPLE tick( SAMPLE in )
     {
         // default: this passes whatever input is patched into Chugin
-        return _ir_buffer[_tmp++ % _order];
-        // return in;
+        // return _ir_buffer[_tmp++ % _order];
+        ++_total;
+        // printf("total %ld\n", _total);
+        // printf("updating input buffer\n");
+        _input_buffer[_idx++] = static_cast<fftconvolver::Sample>(in);
+        if (_idx == _blocksize) {
+          _idx = 0; // reset circular buffer head
+
+          if (_joined) {
+            // printf("joining\n");
+            _conv_thr.join();
+          } else { _joined = true; }
+
+          // TODO: protect this shared memory access with a lock
+          // printf("locking\n");
+          std::lock_guard<std::mutex> guard(_staging_mutex);
+          // printf("locked\n");
+          memset(_staging_in_buffer, 0, _blocksize * sizeof(fftconvolver::Sample));  // zero the staging buffer
+          memcpy(_staging_in_buffer, _input_buffer, _blocksize * sizeof(fftconvolver::Sample)); // copy current input buffer contents
+
+          // We assume the output has finished processing, and copy it from the staging buffer
+          memset(_output_buffer, 0, _blocksize * sizeof(fftconvolver::Sample));  // zero the staging buffer
+          memcpy(_output_buffer, _staging_out_buffer, _blocksize * sizeof(fftconvolver::Sample)); // copy current input buffer contents
+
+          // TODO: do we need to call _conv_thr.join here to collect the previous thread?
+
+          // printf("joined\n");
+          _conv_thr = std::thread(&ConvRev::_process, this); // start processing the new input block
+          // printf("thread started\n");
+        }
+        // printf("returning samp\n");
+        return _scale_factor * static_cast<SAMPLE>(_output_buffer[_idx]);
+    }
+
+    void _process() {
+      // printf("thr locking\n");
+      std::lock_guard<std::mutex> guard(_staging_mutex);
+      // printf("thr locked\n");
+      // printf("thr processing\n");
+      _convolver->process(_staging_in_buffer, _staging_out_buffer, _blocksize);
+      // printf("thr processed\n");
     }
 
     // set parameter example
@@ -125,14 +179,12 @@ public:
     }
 
     t_CKINT getOrder() {
-      std::thread thr(&ConvRev::test_thread_print, this);
-      thr.join();
       return _order;
     }
 
     t_CKFLOAT setCoeff(t_CKINT idx, t_CKFLOAT val) {
       if (idx >= _order) {
-        printf("illegal idx out of bounds, idx = %li on size %li\n", idx, _order);
+        // printf("illegal idx out of bounds, idx = %li on size %li\n", idx, _order);
         return val;
       }
       _ir_buffer[idx] = val;
@@ -140,7 +192,18 @@ public:
     }
     t_CKFLOAT getCoeff(t_CKINT idx) { return _ir_buffer[idx]; }
 
-    void test_thread_print() { printf("thread print %li\n", _order); }
+    t_CKVOID init() {
+      _input_buffer = new fftconvolver::Sample[_blocksize];
+      _output_buffer = new fftconvolver::Sample[_blocksize];
+      _staging_in_buffer = new fftconvolver::Sample[_blocksize];
+      _staging_out_buffer = new fftconvolver::Sample[_blocksize];
+      // printf("init convolver\n");
+      _convolver->init(_blocksize, _ir_buffer, _order);
+      // printf("Initializing ConvRev with blocksize %ld and ir_buffer order %ld\n", _blocksize, _order);
+      _scale_factor = 44100. / _order;
+      if (_scale_factor > 1) { _scale_factor = 1; }
+
+    }
 
 private:
     // instance data
@@ -150,6 +213,17 @@ private:
     int _tmp;
     float *_ir_buffer;
     fftconvolver::FFTConvolver *_convolver;
+    fftconvolver::Sample *_input_buffer;
+    fftconvolver::Sample *_staging_in_buffer;
+    fftconvolver::Sample *_staging_out_buffer;
+    fftconvolver::Sample *_output_buffer;
+    size_t _idx;  // to track head of circular input buffer
+    size_t _total; // how many samples have we processed total
+    std::thread _conv_thr;
+    std::mutex _staging_mutex;  // lock on _staging buffers
+    bool _joined;
+    float _scale_factor;
+
 
 };
 
@@ -179,12 +253,12 @@ CK_DLL_QUERY( ConvRev )
     // and declare a tickf function using CK_DLL_TICKF
 
     // example of adding setter method
-    QUERY->add_mfun(QUERY, convrev_setBlockSize, "float", "param");
+    QUERY->add_mfun(QUERY, convrev_setBlockSize, "float", "blocksize");
     // example of adding argument to the above method
     QUERY->add_arg(QUERY, "float", "arg");
 
     // example of adding getter method
-    QUERY->add_mfun(QUERY, convrev_getBlockSize, "float", "param");
+    QUERY->add_mfun(QUERY, convrev_getBlockSize, "float", "blocksize");
 
 
     QUERY->add_mfun(QUERY, convrev_setOrder, "int", "order");
@@ -199,6 +273,8 @@ CK_DLL_QUERY( ConvRev )
 
     QUERY->add_mfun(QUERY, convrev_getCoeff, "float", "coeff");
     QUERY->add_arg(QUERY, "int", "arg");
+
+    QUERY->add_mfun(QUERY, convrev_init, "void", "init");
 
     // this reserves a variable in the ChucK internal class to store
     // referene to the c++ class we defined above
@@ -301,4 +377,10 @@ CK_DLL_MFUN(convrev_getCoeff)
 {
     ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
     RETURN->v_int = cr_obj->getCoeff(GET_CK_INT(ARGS));
+}
+
+CK_DLL_MFUN(convrev_init)
+{
+  ConvRev * cr_obj = (ConvRev *) OBJ_MEMBER_INT(SELF, convrev_data_offset);
+  cr_obj->init();
 }
