@@ -14,7 +14,6 @@
 // general includes
 #include <stdio.h>
 #include <limits.h>
-
 #include <mutex>
 #include <thread>
 
@@ -41,6 +40,7 @@ CK_DLL_MFUN(convrev_init);  // initialize convolution engine
 
 // load entire buffer at once  (see fluidsynth for how to take in array arg)
 // CK_DLL_MFUN(convrev_setIRBuffer);
+// Problems: no way to return an array, no way to get an array from sndbuf ugen
 
 // for Chugins extending UGen, this is mono synthesis function for 1 sample
 CK_DLL_TICK(convrev_tick);
@@ -48,33 +48,9 @@ CK_DLL_TICK(convrev_tick);
 // this is a special offset reserved for Chugin internal data
 t_CKINT convrev_data_offset = 0;
 
-
-/*
-TODO
-- store IR buffer as member variable
-- buffer incoming samples in circular buffer
-  - cpp circular buffer implementation?
-  - https://en.wikipedia.org/wiki/Circular_buffer
-
-- can I do multithreading in chugin?
-
-#if defined(FFTCONVOLVER_USE_SSE)
-    _mm_malloc(ptr) and _mm_free(ptr) for memory-aligned buffers
-#else
-
-
-Baby steps
-1. get fft convolution working at all. Buffer whole input, convolve, and output.
-  - this is the naive block conv described in paper
-2. implement equivalent of FFTConvolveMono.ck with FFTConvolver, uniform partitions
-3. search for existing implementations of Gardner's paper
-
-*/
-
 // class definition for internal Chugin data
 // (note: this isn't strictly necessary, but serves as example
 // of one recommended approach)
-
 
 class ConvRev
 {
@@ -109,47 +85,30 @@ public:
     SAMPLE tick( SAMPLE in )
     {
         // default: this passes whatever input is patched into Chugin
-        // return _ir_buffer[_tmp++ % _order];
         ++_total;
-        // printf("total %ld\n", _total);
-        // printf("updating input buffer\n");
         _input_buffer[_idx++] = static_cast<fftconvolver::Sample>(in);
         if (_idx == _blocksize) {
           _idx = 0; // reset circular buffer head
 
           if (_joined) {
-            // printf("joining\n");
             _conv_thr.join();
           } else { _joined = true; }
 
-          // TODO: protect this shared memory access with a lock
-          // printf("locking\n");
           std::lock_guard<std::mutex> guard(_staging_mutex);
-          // printf("locked\n");
           memset(_staging_in_buffer, 0, _blocksize * sizeof(fftconvolver::Sample));  // zero the staging buffer
           memcpy(_staging_in_buffer, _input_buffer, _blocksize * sizeof(fftconvolver::Sample)); // copy current input buffer contents
 
-          // We assume the output has finished processing, and copy it from the staging buffer
           memset(_output_buffer, 0, _blocksize * sizeof(fftconvolver::Sample));  // zero the staging buffer
           memcpy(_output_buffer, _staging_out_buffer, _blocksize * sizeof(fftconvolver::Sample)); // copy current input buffer contents
 
-          // TODO: do we need to call _conv_thr.join here to collect the previous thread?
-
-          // printf("joined\n");
           _conv_thr = std::thread(&ConvRev::_process, this); // start processing the new input block
-          // printf("thread started\n");
         }
-        // printf("returning samp\n");
         return _scale_factor * static_cast<SAMPLE>(_output_buffer[_idx]);
     }
 
     void _process() {
-      // printf("thr locking\n");
       std::lock_guard<std::mutex> guard(_staging_mutex);
-      // printf("thr locked\n");
-      // printf("thr processing\n");
       _convolver->process(_staging_in_buffer, _staging_out_buffer, _blocksize);
-      // printf("thr processed\n");
     }
 
     // set parameter example
@@ -184,7 +143,7 @@ public:
 
     t_CKFLOAT setCoeff(t_CKINT idx, t_CKFLOAT val) {
       if (idx >= _order) {
-        // printf("illegal idx out of bounds, idx = %li on size %li\n", idx, _order);
+        printf("illegal idx out of bounds, idx = %li on size %li\n", idx, _order);
         return val;
       }
       _ir_buffer[idx] = val;
@@ -197,9 +156,7 @@ public:
       _output_buffer = new fftconvolver::Sample[_blocksize];
       _staging_in_buffer = new fftconvolver::Sample[_blocksize];
       _staging_out_buffer = new fftconvolver::Sample[_blocksize];
-      // printf("init convolver\n");
       _convolver->init(_blocksize, _ir_buffer, _order);
-      // printf("Initializing ConvRev with blocksize %ld and ir_buffer order %ld\n", _blocksize, _order);
       _scale_factor = 44100. / _order;
       if (_scale_factor > 1) { _scale_factor = 1; }
 
@@ -223,8 +180,6 @@ private:
     std::mutex _staging_mutex;  // lock on _staging buffers
     bool _joined;
     float _scale_factor;
-
-
 };
 
 
