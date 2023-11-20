@@ -86,8 +86,6 @@
 * @endcode
 */
 
-#define AUDIOFFT_FFTW3
-
 #include <cstddef>
 #include <memory>
 
